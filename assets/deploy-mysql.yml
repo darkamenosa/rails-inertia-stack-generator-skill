@@ -1,0 +1,64 @@
+# Kamal deployment configuration for Inertia Rails with MySQL and SSR
+# Replace PROJECT_NAME, username, and IP addresses with your values
+
+service: PROJECT_NAME
+image: username/PROJECT_NAME
+
+servers:
+  web:
+    - 192.168.0.1
+  vite:
+    hosts:
+      - 192.168.0.1
+    cmd: bin/vite ssr
+    options:
+      network-alias: vite_ssr
+
+proxy:
+  ssl: true
+  host: app.example.com
+
+registry:
+  username: username
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+env:
+  secret:
+    - RAILS_MASTER_KEY
+    - MYSQL_ROOT_PASSWORD
+  clear:
+    SOLID_QUEUE_IN_PUMA: true
+    DB_HOST: PROJECT_NAME-db
+    INERTIA_SSR_URL: http://vite_ssr:13714
+
+aliases:
+  console: app exec --interactive --reuse "bin/rails console"
+  shell: app exec --interactive --reuse "bash"
+  logs: app logs -f
+  dbc: app exec --interactive --reuse "bin/rails dbconsole"
+
+volumes:
+  - "PROJECT_NAME_storage:/rails/storage"
+
+asset_path: /rails/public/assets
+
+builder:
+  arch: amd64
+
+accessories:
+  db:
+    image: mysql:9.4.0  # Latest Innovation release. Use mysql:8.4 for LTS (Long-Term Support) version
+    host: 192.168.0.1
+    port: "127.0.0.1:3306:3306"
+    env:
+      clear:
+        MYSQL_ROOT_HOST: '%'
+        MYSQL_DATABASE: PROJECT_NAME_production
+        MYSQL_USER: PROJECT_NAME
+      secret:
+        - MYSQL_ROOT_PASSWORD
+    files:
+      - db/production.sql:/docker-entrypoint-initdb.d/setup.sql
+    directories:
+      - data:/var/lib/mysql
