@@ -159,21 +159,6 @@ Configure TypeScript for ShadcnUI (CRITICAL: update BOTH files):
 }
 ```
 
-**vite.config.ts** - Add path alias:
-```typescript
-import path from 'path'
-// ... other imports
-
-export default defineConfig({
-  plugins: [react(), tailwindcss(), RubyPlugin()],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './app/frontend'),
-    },
-  },
-})
-```
-
 **Initialize ShadcnUI (non-interactive):**
 ```bash
 npx shadcn@latest init --defaults --yes
@@ -433,7 +418,6 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 
 ### ShadcnUI Components Not Resolving
 - Verify BOTH tsconfig files have path aliases
-- Check `vite.config.ts` has `resolve.alias` configuration
 - Ensure imports use `@/` prefix: `import { Button } from '@/components/ui/button'`
 
 ## Resources
