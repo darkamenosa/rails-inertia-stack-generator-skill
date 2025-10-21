@@ -44,7 +44,9 @@ volumes:
 asset_path: /rails/public/assets
 
 builder:
-  arch: amd64
+  arch:
+    - amd64
+    - arm64
 
 accessories:
   db:
