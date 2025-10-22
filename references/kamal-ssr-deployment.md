@@ -118,8 +118,7 @@ For SQLite, use volumes instead of database accessory:
 
 ```yaml
 volumes:
-  - "PROJECT_NAME_storage:/rails/storage"
-  - "PROJECT_NAME_db:/rails/db"  # Persistent SQLite files
+  - "PROJECT_NAME_storage:/rails/storage"  # SQLite files stored here in Rails 8+
 
 env:
   secret:
@@ -130,6 +129,33 @@ env:
 ```
 
 **No DB_HOST needed** - SQLite uses local files.
+
+---
+
+## Redis/Valkey Accessory (Optional)
+
+For caching, queues, or Action Cable, use Valkey instead of Redis due to licensing:
+
+```yaml
+accessories:
+  redis:
+    image: valkey/valkey:9  # Use Valkey, not redis image
+    host: SERVER_IP
+    port: "127.0.0.1:6379:6379"
+    directories:
+      - redis_data:/data
+
+env:
+  clear:
+    REDIS_URL: redis://PROJECT_NAME-redis:6379/1
+```
+
+**Why Valkey?**
+- Valkey is a Redis-compatible fork with a more permissive license
+- Avoids Redis licensing restrictions introduced in Redis 7.4+
+- Drop-in replacement with full Redis protocol compatibility
+
+---
 
 ## Database Initialization Files
 

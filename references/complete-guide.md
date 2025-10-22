@@ -349,7 +349,9 @@ ls public/vite-ssr/ssr.js  # SSR bundle should exist
 
 ### Key Changes from Standard Rails 8 Dockerfile
 
-**The blog's approach uses `node-build` to install Node.js in BOTH base and final stages.**
+**Two critical modifications:**
+1. **Install Node.js in base stage** using prebuilt binaries with multi-architecture support
+2. **Lock Bundler version** to match Gemfile.lock to prevent build cache invalidation
 
 **Edit: `Dockerfile`**
 
@@ -361,28 +363,40 @@ RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y curl libjemalloc2 libvips postgresql-client && \
     rm -rf /var/lib/apt/lists /var/cache/apt/archives
 
-# Install JavaScript dependencies
-ARG NODE_VERSION=22.13.1
+# Install JavaScript runtime (prebuilt Node per-arch)
+ARG NODE_VERSION=25.0.0
+ARG TARGETARCH
 ENV PATH=/usr/local/node/bin:$PATH
-RUN curl -sL https://github.com/nodenv/node-build/archive/master.tar.gz | tar xz -C /tmp/ && \
-    /tmp/node-build-master/bin/node-build "${NODE_VERSION}" /usr/local/node && \
-    rm -rf /tmp/node-build-master
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y xz-utils && \
+    case "${TARGETARCH}" in \
+      amd64) NODEARCH=x64 ;; \
+      arm64) NODEARCH=arm64 ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    mkdir -p /usr/local/node && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODEARCH}.tar.xz" | \
+      tar -xJ -C /usr/local/node --strip-components=1 && \
+    /usr/local/node/bin/node -v && \
+    /usr/local/node/bin/npm -v && \
+    apt-get purge -y --auto-remove xz-utils && \
+    rm -rf /var/lib/apt/lists /var/cache/apt/archives
+
+# Ensure the Bundler version matches Gemfile.lock to avoid per-build upgrades.
+RUN gem install bundler -v 2.7.2 -N
 ```
 
-**2. Install node modules in build stage:**
+**Important:** Check your `Gemfile.lock` for the `BUNDLED WITH` version at the bottom and update to match:
 
-```dockerfile
-# Install application gems
-COPY Gemfile Gemfile.lock ./
-RUN bundle install && \
-    rm -rf ~/.bundle/ "${BUNDLE_PATH}"/ruby/*/cache "${BUNDLE_PATH}"/ruby/*/bundler/gems/*/.git && \
-    bundle exec bootsnap precompile --gemfile
-
-# Install node modules
-COPY package.json package-lock.json ./
-RUN npm ci && \
-    rm -rf ~/.npm
+```bash
+tail Gemfile.lock
+# BUNDLED WITH
+#    2.7.2
 ```
+
+**2. No changes to build stage needed!**
+
+Vite Ruby automatically installs node modules during `rails assets:precompile`, so there's no need for a separate npm ci step.
 
 **3. No changes to final stage needed!**
 
@@ -444,10 +458,12 @@ env:
     - RAILS_MASTER_KEY
     - POSTGRES_PASSWORD  # or MYSQL_ROOT_PASSWORD for MySQL
   clear:
-    SOLID_QUEUE_IN_PUMA: true
+    SOLID_QUEUE_IN_PUMA: true  # Omit if using --skip-solid
     DB_HOST: PROJECT_NAME-db
     INERTIA_SSR_URL: http://vite_ssr:13714
 ```
+
+**Note:** `SOLID_QUEUE_IN_PUMA: true` should be included only if the project was created WITH Solid (default). If you used `--skip-solid` flag, omit this variable.
 
 **Add Database Accessory (PostgreSQL):**
 
@@ -496,9 +512,10 @@ SQLite doesn't need a database server. Use volumes for persistence:
 
 ```yaml
 volumes:
-  - "PROJECT_NAME_storage:/rails/storage"
-  - "PROJECT_NAME_db:/rails/db"  # ← Add this for SQLite files
+  - "PROJECT_NAME_storage:/rails/storage"  # ← SQLite files stored here in Rails 8+
 ```
+
+**Important:** Rails 8+ stores SQLite production database in `storage/production.sqlite3`, not in `db/`. Check your `config/database.yml` to verify the path.
 
 ---
 
@@ -677,8 +694,8 @@ npx shadcn@latest add COMPONENT --yes --overwrite
 ```
 
 ### 5. Database Flexibility
-- **PostgreSQL:** Production recommended, use `postgres:16` accessory
-- **MySQL:** Use `mysql:8.0` accessory, change client libraries
+- **PostgreSQL:** Production recommended, use `postgres:18` accessory (latest stable)
+- **MySQL:** Use `mysql:9.4.0` (Innovation) or `mysql:8.4` (LTS) accessory, change client libraries
 - **SQLite:** No accessory, use volumes, simpler for small apps
 
 ---
@@ -693,6 +710,8 @@ npx shadcn@latest add COMPONENT --yes --overwrite
 6. ❌ **Wrong Procfile.dev order** (Rails on port 3100 instead of 3000)
 7. ❌ **Missing `host: "127.0.0.1"` in vite.json** (127.0.0.1 fails)
 8. ❌ **Not updating database.yml** with `DB_HOST` and password ENV vars
+9. ❌ **Wrong SQLite volume path** (use `/rails/storage` not `/rails/db`)
+10. ❌ **Bundler version mismatch** (lock version to match `Gemfile.lock`)
 
 ---
 
@@ -772,7 +791,7 @@ If you see rendered content in curl output, SSR is working!
 
 - Add more ShadcnUI components: `npx shadcn@latest add COMPONENT --yes --overwrite`
 - Configure custom domain in `config/deploy.yml` → `proxy.host`
-- Add Redis accessory for caching/background jobs
+- Add Valkey accessory for caching/background jobs (use `valkey/valkey:9` image instead of Redis)
 - Set up CI/CD with GitHub Actions
 - Configure monitoring and logging
 - Add health checks to deploy.yml

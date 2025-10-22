@@ -47,7 +47,12 @@ cd PROJECT_NAME
 
 **SQLite:**
 ```bash
+# Default with Solid stack
 rails new PROJECT_NAME --skip-javascript
+cd PROJECT_NAME
+
+# Or without Solid stack (if user requests)
+rails new PROJECT_NAME --skip-javascript --skip-solid
 cd PROJECT_NAME
 ```
 
@@ -229,35 +234,52 @@ end
 
 ### Step 8: Configure Dockerfile for SSR
 
-The blog shows exactly TWO modifications to the generated Dockerfile - nothing more!
+TWO modifications needed to the generated Dockerfile!
 
 Reference `references/dockerfile-ssr-patterns.md` for complete examples.
 
 **Modification 1: Install Node.js in BASE stage**
 
-Add AFTER "Install base packages", BEFORE "Set production environment":
+Add AFTER "Install base packages", BEFORE bundler installation:
 
 ```dockerfile
-# Install JavaScript dependencies
-ARG NODE_VERSION=22.13.1
+# Install JavaScript runtime (prebuilt Node per-arch)
+ARG NODE_VERSION=25.0.0
+ARG TARGETARCH
 ENV PATH=/usr/local/node/bin:$PATH
-RUN curl -sL https://github.com/nodenv/node-build/archive/master.tar.gz | tar xz -C /tmp/ && \
-    /tmp/node-build-master/bin/node-build "${NODE_VERSION}" /usr/local/node && \
-    rm -rf /tmp/node-build-master
+RUN apt-get update -qq && \
+    apt-get install --no-install-recommends -y xz-utils && \
+    case "${TARGETARCH}" in \
+      amd64) NODEARCH=x64 ;; \
+      arm64) NODEARCH=arm64 ;; \
+      *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac && \
+    mkdir -p /usr/local/node && \
+    curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODEARCH}.tar.xz" | \
+      tar -xJ -C /usr/local/node --strip-components=1 && \
+    /usr/local/node/bin/node -v && \
+    /usr/local/node/bin/npm -v && \
+    apt-get purge -y --auto-remove xz-utils && \
+    rm -rf /var/lib/apt/lists /var/cache/apt/archives
 ```
 
-**Modification 2: Install npm packages in BUILD stage**
+**Modification 2: Install Bundler with Locked Version**
 
-Add AFTER "Install application gems", BEFORE "Copy application code":
+Add AFTER Node.js installation, BEFORE "Set production environment":
 
 ```dockerfile
-# Install node modules
-COPY package.json package-lock.json ./
-RUN npm ci && \
-    rm -rf ~/.npm
+# Ensure the Bundler version matches Gemfile.lock to avoid per-build upgrades.
+RUN gem install bundler -v 2.7.2 -N
 ```
 
-**That's all!** No changes to final stage, no EXPOSE, no CMD modifications.
+**Important:** Check `Gemfile.lock` bottom section for `BUNDLED WITH` version and update to match:
+```bash
+tail Gemfile.lock
+# BUNDLED WITH
+#    2.7.2
+```
+
+**That's all!** No changes to BUILD stage (Vite Ruby handles npm install), no changes to final stage, no EXPOSE, no CMD modifications.
 
 **Database client variations** - adjust base packages only:
 - PostgreSQL: `postgresql-client` (base) and `libpq-dev` (build)
@@ -275,6 +297,43 @@ Reference `references/kamal-ssr-deployment.md` and `references/complete-guide.md
 2. Add `INERTIA_SSR_URL: http://vite_ssr:13714` to env
 3. Configure database accessory (PostgreSQL/MySQL) or volumes (SQLite)
 4. Update database environment variables
+5. (Optional) Add Redis/Valkey accessory if needed for caching, queues, or Action Cable
+
+**Redis/Valkey Configuration (if requested):**
+Use Valkey instead of Redis due to licensing concerns:
+```yaml
+accessories:
+  redis:
+    image: valkey/valkey:9  # Use Valkey, not redis image
+    host: SERVER_IP
+    port: "127.0.0.1:6379:6379"
+    directories:
+      - redis_data:/data
+
+env:
+  clear:
+    REDIS_URL: redis://PROJECT_NAME-redis:6379/1
+```
+
+**Solid Queue Configuration:**
+- If user created project WITH Solid (default), include:
+  ```yaml
+  env:
+    clear:
+      SOLID_QUEUE_IN_PUMA: true
+  ```
+- If user created project with `--skip-solid`, OMIT this variable
+
+**Optional: Async Job Server (Advanced):**
+For dedicated job processing (alternative to `SOLID_QUEUE_IN_PUMA`), add a job server:
+```yaml
+servers:
+  job:
+    hosts:
+      - SERVER_IP
+    cmd: bundle exec async-job-adapter-active_job-server
+```
+This runs jobs in a separate container for better resource isolation.
 
 **Create database initialization file** at `db/production.sql`:
 ```sql
@@ -348,13 +407,15 @@ bin/rails generate inertia:install --no-interactive
 ```
 
 ### SSR Build Process
-- ✅ Use `rails assets:precompile` (handles both client and SSR)
+- ✅ Use `rails assets:precompile` (handles both client and SSR, plus npm install)
 - ❌ Do NOT run `bin/vite build --ssr` separately (redundant)
+- ❌ Do NOT run `npm ci` separately (Vite Ruby handles it)
 
 ### Dockerfile Node.js
-- ✅ Install Node.js in base stage using node-build
+- ✅ Install Node.js in base stage using prebuilt binaries (supports multi-arch)
 - ✅ Node.js automatically included in final stage
 - ❌ Do NOT remove Node.js after build (breaks SSR)
+- ❌ Do NOT run npm ci separately (Vite Ruby handles it)
 
 ### Kamal SSR Architecture
 ```
@@ -386,7 +447,23 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 - **Gem:** `sqlite3` (default)
 - **Dockerfile:** No database client needed
 - **Deployment:** Use volumes instead of accessory
-- **Volume:** Add `- "PROJECT_NAME_db:/rails/db"` to volumes
+- **Important:** SQLite databases are stored in `storage/` directory in Rails 8+
+- **Volume configuration:**
+  ```yaml
+  # CORRECT: Mount storage directory (contains production.sqlite3)
+  volumes:
+    - "PROJECT_NAME_storage:/rails/storage"
+
+  # INCORRECT: Do not mount db directory
+  # volumes:
+  #   - "PROJECT_NAME_db:/rails/db"
+  ```
+- **Database location:** Check `config/database.yml` production section for actual path:
+  ```yaml
+  production:
+    <<: *default
+    database: storage/production.sqlite3  # Note: stored in storage/ not db/
+  ```
 
 ## Common Pitfalls to Avoid
 
@@ -397,6 +474,9 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 5. **Wrong Procfile.dev order** - Vite first causes Rails to run on port 3100 instead of 3000
 6. **Missing vite.json host** - Without `"host": "127.0.0.1"`, connections to 127.0.0.1 fail
 7. **Not updating database.yml** - Must add `host: <%= ENV["DB_HOST"] %>` and password for production
+8. **Wrong SQLite volume path** - Must mount `/rails/storage` (not `/rails/db`) since Rails 8 stores SQLite in storage/ directory
+9. **Using Redis image instead of Valkey** - Use `valkey/valkey:9` image to avoid Redis licensing concerns
+10. **Bundler version mismatch** - Must lock bundler version in Dockerfile to match `Gemfile.lock` to prevent cache invalidation
 
 ## Troubleshooting
 
@@ -431,5 +511,6 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 - `ssr-entry.tsx` - SSR server entry point template
 - `deploy-postgres.yml` - PostgreSQL deployment configuration
 - `deploy-mysql.yml` - MySQL deployment configuration
+- `deploy-sqlite.yml` - SQLite deployment configuration
 
 Use these references when detailed examples are needed or when helping users with specific database configurations.
