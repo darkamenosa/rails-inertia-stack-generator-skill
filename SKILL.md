@@ -293,7 +293,7 @@ Update `config/deploy.yml` with SSR and database configuration.
 Reference `references/kamal-ssr-deployment.md` and `references/complete-guide.md` for detailed examples.
 
 **Key additions:**
-1. Add `vite` server with `network-alias: vite_ssr`
+1. Add `vite` server with `init: true` and `network-alias: vite_ssr` options
 2. Add `INERTIA_SSR_URL: http://vite_ssr:13714` to env
 3. Configure database accessory (PostgreSQL/MySQL) or volumes (SQLite)
 4. Update database environment variables

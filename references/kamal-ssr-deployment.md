@@ -23,6 +23,7 @@ servers:
       - 192.168.0.1
     cmd: bin/vite ssr
     options:
+      init: true
       network-alias: vite_ssr
 ```
 
@@ -193,6 +194,7 @@ servers:
       - 192.168.0.1
     cmd: bin/vite ssr
     options:
+      init: true
       network-alias: vite_ssr
 
 proxy:
@@ -225,7 +227,9 @@ volumes:
 asset_path: /rails/public/assets
 
 builder:
-  arch: amd64
+  arch:
+    - amd64
+    - arm64
 
 accessories:
   db:
