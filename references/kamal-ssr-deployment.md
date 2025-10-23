@@ -53,6 +53,8 @@ env:
 
 ### PostgreSQL Configuration
 
+**BREAKING CHANGE (PostgreSQL 18):** The data volume mount path has changed from `data:/var/lib/postgresql/data` (previous versions) to `data:/var/lib/postgresql` (PostgreSQL 18+). If upgrading from an older PostgreSQL version, you'll need to migrate your data or adjust your volume mounts accordingly.
+
 ```yaml
 accessories:
   db:
@@ -68,7 +70,7 @@ accessories:
     files:
       - db/production.sql:/docker-entrypoint-initdb.d/setup.sql
     directories:
-      - data:/var/lib/postgresql/data
+      - data:/var/lib/postgresql
 
 env:
   secret:
@@ -245,7 +247,7 @@ accessories:
     files:
       - db/production.sql:/docker-entrypoint-initdb.d/setup.sql
     directories:
-      - data:/var/lib/postgresql/data
+      - data:/var/lib/postgresql
 ```
 
 ## Architecture Diagram

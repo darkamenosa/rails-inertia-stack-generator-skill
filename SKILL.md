@@ -432,6 +432,7 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 - **Dockerfile client:** `postgresql-client`
 - **Dockerfile build lib:** `libpq-dev`
 - **Accessory image:** `postgres:18` (latest stable)
+- **Volume mount:** `data:/var/lib/postgresql` (BREAKING CHANGE in PostgreSQL 18: previous versions used `data:/var/lib/postgresql/data`)
 - **Port:** `127.0.0.1:5432:5432`
 - **Env vars:** `POSTGRES_USER`, `POSTGRES_DB`, `POSTGRES_PASSWORD`
 
