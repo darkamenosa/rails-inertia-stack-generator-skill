@@ -170,6 +170,166 @@ npx shadcn@latest init --defaults --yes
 npx shadcn@latest add button --yes --overwrite
 ```
 
+### Step 6.1: Install ESLint + Prettier
+
+Set up code linting and formatting for the TypeScript/React frontend. This config follows Vite's official react-ts template patterns and uses flat config (mandatory since ESLint v10).
+
+**Install dev dependencies:**
+```bash
+npm add -D @eslint/js eslint@9 eslint-config-prettier eslint-plugin-import-x eslint-plugin-react eslint-plugin-react-hooks eslint-plugin-react-refresh globals typescript-eslint@8 prettier
+```
+
+**Note:** Pin `eslint@9` and `typescript-eslint@8` — ESLint v10 just released but `eslint-plugin-import-x` doesn't yet support it.
+
+**Key design decisions:**
+- `eslint-config-prettier` (disables conflicting rules) instead of `eslint-plugin-prettier` (runs Prettier as ESLint rule) — Prettier runs separately via `npm run format`
+- `eslint-plugin-react-refresh` — essential for Vite HMR, catches components that break fast refresh
+- `eslint-plugin-react-hooks` v7 — includes React Compiler lint rules
+- `eslint-plugin-import-x` — modern fork of `eslint-plugin-import` (16 deps vs 117, supports `exports` field)
+- `globals` — proper browser globals definition
+
+**Create `eslint.config.mjs`:**
+```javascript
+import js from "@eslint/js";
+import globals from "globals";
+import tseslint from "typescript-eslint";
+import react from "eslint-plugin-react";
+import reactHooks from "eslint-plugin-react-hooks";
+import reactRefresh from "eslint-plugin-react-refresh";
+import importX from "eslint-plugin-import-x";
+import prettierConfig from "eslint-config-prettier";
+
+export default tseslint.config(
+  // Global ignores
+  {
+    ignores: [
+      "node_modules/**",
+      "public/**",
+      "vendor/**",
+      "tmp/**",
+      "log/**",
+      "storage/**",
+      "*.d.ts",
+    ],
+  },
+
+  // Base JS + TypeScript recommended rules
+  js.configs.recommended,
+  ...tseslint.configs.recommended,
+
+  // React JSX rules (flat config presets)
+  {
+    files: ["**/*.{jsx,tsx}"],
+    ...react.configs.flat.recommended,
+    ...react.configs.flat["jsx-runtime"],
+    settings: { react: { version: "detect" } },
+    rules: {
+      ...react.configs.flat.recommended.rules,
+      ...react.configs.flat["jsx-runtime"].rules,
+      "react/prop-types": "off",
+      "react/no-unescaped-entities": "off",
+      "react/no-unknown-property": ["error", { ignore: ["head-key"] }],
+    },
+  },
+
+  // React Hooks (official React team plugin, includes React Compiler rules)
+  {
+    files: ["**/*.{jsx,tsx}"],
+    ...reactHooks.configs.flat.recommended,
+  },
+
+  // React Refresh (essential for Vite HMR)
+  {
+    files: ["**/*.{jsx,tsx}"],
+    ...reactRefresh.configs.vite,
+    rules: {
+      ...reactRefresh.configs.vite.rules,
+      "react-refresh/only-export-components": [
+        "warn",
+        { allowConstantExport: true },
+      ],
+    },
+  },
+
+  // Import ordering and validation
+  {
+    files: ["**/*.{js,jsx,ts,tsx}"],
+    plugins: { "import-x": importX },
+    rules: {
+      "import-x/order": [
+        "error",
+        {
+          groups: ["builtin", "external", "internal", "parent", "sibling", "index"],
+          "newlines-between": "always",
+          alphabetize: { order: "asc", caseInsensitive: true },
+        },
+      ],
+      "import-x/no-duplicates": "error",
+    },
+  },
+
+  // TypeScript-specific rules
+  {
+    files: ["**/*.{ts,tsx}"],
+    languageOptions: {
+      globals: globals.browser,
+    },
+    rules: {
+      "@typescript-eslint/no-unused-vars": ["warn", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
+      "@typescript-eslint/no-explicit-any": "warn",
+      "@typescript-eslint/consistent-type-imports": ["error", { prefer: "type-imports", fixStyle: "inline-type-imports" }],
+    },
+  },
+
+  // Disable ESLint rules that conflict with Prettier (Prettier runs separately)
+  prettierConfig,
+
+  // Console warnings
+  {
+    files: ["**/*.{js,jsx,ts,tsx}"],
+    rules: { "no-console": ["warn", { allow: ["warn", "error"] }] },
+  },
+);
+```
+
+**Add scripts to `package.json`:**
+```json
+{
+  "scripts": {
+    "check": "tsc -p tsconfig.app.json && tsc -p tsconfig.node.json",
+    "lint": "eslint app/frontend",
+    "lint:fix": "eslint app/frontend --fix",
+    "format": "prettier --write app/frontend",
+    "format:check": "prettier --check app/frontend"
+  }
+}
+```
+
+### Step 6.2: Create Project Style Guides and CLAUDE.md
+
+Create a `docs/` directory and write the coding style guides, plus a project-level `CLAUDE.md` that references them. These are read from the skill's asset files.
+
+**Create `CLAUDE.md`:**
+Copy from `assets/CLAUDE.md` — Project-level instructions for Claude Code including core rules, development workflow (backend/frontend conventions), strong parameters (Rails 8+), Inertia props convention (snake_case → camelCase), Rails patterns (REST-only controllers, rich domain models), project structure, commands, and architecture overview. The user should customize the "Product Context" section after setup.
+
+**Create `docs/tailwind.md`:**
+Copy from `assets/tailwind.md` — Tailwind CSS v4.1+ rules including breaking changes reference, renamed utilities, layout/spacing rules, typography, opacity modifiers, responsive design, dark mode, gradient utilities, CSS variables, container queries, and common pitfalls.
+
+**Create `docs/STYLE.md`:**
+Copy from `assets/STYLE.md` — Ruby/Rails style guide covering conditional returns (prefer expanded over guard clauses), methods ordering, invocation order, bang methods, visibility modifiers (indent under private), CRUD controllers, vanilla Rails approach, and async operations in jobs.
+
+These files ensure Claude Code reads and follows the team's coding conventions automatically.
+
+### Step 6.3: Install js-routes (Optional but Recommended)
+
+Generate JavaScript route helpers from Rails routes so the frontend can reference named routes type-safely.
+
+```bash
+bundle add js-routes
+```
+
+This generates route helpers that can be imported in TypeScript. See [js-routes documentation](https://github.com/railsware/js-routes) for configuration.
+
 ### Step 7: Configure Server-Side Rendering (SSR)
 
 **Create SSR entry point** at `app/frontend/ssr/ssr.tsx`:
@@ -187,6 +347,11 @@ createServer((page) =>
       return pages[`../pages/${name}.tsx`]
     },
     setup: ({ App, props }) => <App {...props} />,
+    defaults: {
+      form: {
+        forceIndicesArrayFormatInFormData: false,
+      },
+    },
   }),
 )
 ```
@@ -213,6 +378,38 @@ setup({ el, App, props }) {
 }
 ```
 
+**(Optional) Use script element for initial page JSON (Inertia v2 future default)**  
+If you enable `useScriptElementForInitialPage` on the client, you must also:
+1) Enable the matching server option, and  
+2) Render `inertia_root` from an Inertia root view (not the layout).
+
+Add to `app/frontend/entrypoints/inertia.ts` and `app/frontend/ssr/ssr.tsx`:
+```typescript
+defaults: {
+  form: {
+    forceIndicesArrayFormatInFormData: false,
+  },
+  future: {
+    useScriptElementForInitialPage: true,
+    useDataInertiaHeadAttribute: true,
+    useDialogForErrorModal: true,
+    preserveEqualProps: true,
+  },
+},
+```
+
+Add to `config/initializers/inertia_rails.rb`:
+```ruby
+config.use_script_element_for_initial_page = true
+```
+
+Create `app/views/inertia.html.erb`:
+```erb
+<%= inertia_root %>
+```
+
+If you skip these, the client will look for `<script data-page>` but the server will still render `data-page` on the root div, causing a null page error during boot.
+
 **Enable SSR in Vite** - Add to `config/vite.json`:
 ```json
 {
@@ -229,8 +426,16 @@ InertiaRails.configure do |config|
   config.encrypt_history = true
   config.always_include_errors_hash = true
   config.ssr_enabled = ViteRuby.config.ssr_build_enabled
+
+  # Transform snake_case props to camelCase for JavaScript frontend
+  config.prop_transformer = lambda do |props:|
+    props.deep_transform_keys { |key| key.to_s.camelize(:lower) }
+  end
 end
 ```
+
+**Why prop_transformer?**
+Rails uses snake_case by convention, but JavaScript/React uses camelCase. This transformer automatically converts all prop keys (e.g., `created_at` → `createdAt`) so the frontend receives idiomatic JavaScript objects without manual conversion.
 
 ### Step 8: Configure Dockerfile for SSR
 
@@ -478,6 +683,7 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 8. **Wrong SQLite volume path** - Must mount `/rails/storage` (not `/rails/db`) since Rails 8 stores SQLite in storage/ directory
 9. **Using Redis image instead of Valkey** - Use `valkey/valkey:9` image to avoid Redis licensing concerns
 10. **Bundler version mismatch** - Must lock bundler version in Dockerfile to match `Gemfile.lock` to prevent cache invalidation
+11. **Wrong prop_transformer signature** - Must use keyword argument `lambda { |props:| ... }` or `->(props:) { ... }`, NOT positional `proc { |props| ... }`. inertia_rails 3.17+ calls `prop_transformer(props: props)` with a keyword arg — using a positional param wraps props in a `{ props: { ... } }` key, making all props inaccessible on the frontend
 
 ## Troubleshooting
 
@@ -513,5 +719,8 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 - `deploy-postgres.yml` - PostgreSQL deployment configuration
 - `deploy-mysql.yml` - MySQL deployment configuration
 - `deploy-sqlite.yml` - SQLite deployment configuration
+- `CLAUDE.md` - Project-level Claude Code instructions (write to `CLAUDE.md` at project root)
+- `tailwind.md` - Tailwind CSS v4.1+ rules and best practices (write to `docs/tailwind.md`)
+- `STYLE.md` - Ruby/Rails coding style guide (write to `docs/STYLE.md`)
 
 Use these references when detailed examples are needed or when helping users with specific database configurations.
