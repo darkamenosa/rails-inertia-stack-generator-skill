@@ -87,7 +87,9 @@ Target the current plugin-based stack:
 - `@inertiajs/react` 3.x
 - `@inertiajs/vite` 3.x
 
-The generator should install the frontend packages, but always verify `package.json` includes `@inertiajs/react` and `@inertiajs/vite`.
+The generator should install `@inertiajs/react`, but always verify and install manually if missing:
+- `@inertiajs/react` in dependencies
+- `@inertiajs/vite` in devDependencies (install with `npm add -D @inertiajs/vite` if the generator didn't add it)
 
 Also verify `package.json` builds both bundles:
 ```json
@@ -367,7 +369,9 @@ createServer((page) =>
     render: ReactDOMServer.renderToString,
     resolve: (name) => {
       const pages = import.meta.glob('../pages/**/*.tsx', { eager: true })
-      return pages[`../pages/${name}.tsx`]
+      const mod = pages[`../pages/${name}.tsx`]
+      if (!mod) throw new Error(`Missing Inertia page: '${name}.tsx'`)
+      return mod.default
     },
     setup: ({ App, props }) => <App {...props} />,
     defaults: {
@@ -403,16 +407,21 @@ Do not add a manual `build.rollupOptions.input` override unless you have a repo-
 
 **Enable client-side hydration** in `app/frontend/entrypoints/inertia.tsx`:
 
-Add `hydrateRoot` import:
+Add imports:
 ```typescript
+import { StrictMode } from 'react'
 import { createRoot, hydrateRoot } from 'react-dom/client'
 ```
 
-Update setup function:
+Update setup function (StrictMode wraps both hydrate and CSR paths):
 ```typescript
 setup({ el, App, props }) {
   if (el) {
-    const app = <App {...props} />
+    const app = (
+      <StrictMode>
+        <App {...props} />
+      </StrictMode>
+    )
 
     if (el.hasAttribute('data-server-rendered')) {
       hydrateRoot(el, app)
@@ -427,18 +436,16 @@ setup({ el, App, props }) {
 
 Do not gate hydration on `import.meta.env.MODE === 'production'`. In dev SSR, the HTML is already server-rendered and still needs hydration.
 
-**Enable Inertia 3 page bootstrap + head markers on the Rails side**
+**Configure Inertia Rails with SSR** in `config/initializers/inertia_rails.rb`:
 
-Inertia 3 expects the server to render:
-- `<script data-page="app" type="application/json">`
-- head tags marked with `data-inertia`
-
-Add to `config/initializers/inertia_rails.rb`:
 ```ruby
 InertiaRails.configure do |config|
   config.version = ViteRuby.digest
   config.encrypt_history = true
   config.always_include_errors_hash = true
+  config.ssr_enabled = lambda {
+    ViteRuby.config.ssr_build_enabled || ViteRuby.instance.dev_server_running?
+  }
   config.use_script_element_for_initial_page = true
   config.use_data_inertia_head_attribute = true
 
@@ -449,12 +456,17 @@ InertiaRails.configure do |config|
 end
 ```
 
-Create `app/views/inertia.html.erb`:
+**Why these settings matter:**
+- `ssr_enabled` lambda — enables production SSR when `ssrBuildEnabled` is on, and development SSR automatically when the Vite dev server is running via `bin/dev`
+- `use_script_element_for_initial_page` + `use_data_inertia_head_attribute` — Inertia 3 expects `<script data-page="app" type="application/json">` and head tags marked with `data-inertia`; without these, client and server markup diverge
+- `prop_transformer` — Rails uses snake_case, JavaScript uses camelCase; this auto-converts all prop keys (e.g., `created_at` → `createdAt`) so the frontend receives idiomatic objects. Must use keyword argument `|props:|`, not positional `|props|`
+
+Do not add the old client-side `defaults.future` block for these flags. In Inertia 3 those client futures are no longer the right upgrade path; keep the compatibility settings in Rails.
+
+**Create `app/views/inertia.html.erb`:**
 ```erb
 <%= inertia_root %>
 ```
-
-Do not add the old client-side `defaults.future` block for these flags. In Inertia 3 those client futures are no longer the right upgrade path; keep the compatibility settings in Rails.
 
 **Verify the application layout still includes the Inertia + Vite tags**
 
@@ -476,32 +488,6 @@ If `inertia_ssr_head` is missing, SSR head tags will not be rendered. If `vite_t
   }
 }
 ```
-
-**Enable SSR in Inertia Rails** - Update `config/initializers/inertia_rails.rb`:
-```ruby
-InertiaRails.configure do |config|
-  config.version = ViteRuby.digest
-  config.encrypt_history = true
-  config.always_include_errors_hash = true
-  config.ssr_enabled = lambda {
-    ViteRuby.config.ssr_build_enabled || ViteRuby.instance.dev_server_running?
-  }
-  config.use_script_element_for_initial_page = true
-  config.use_data_inertia_head_attribute = true
-
-  # Transform snake_case props to camelCase for JavaScript frontend
-  config.prop_transformer = lambda do |props:|
-    props.deep_transform_keys { |key| key.to_s.camelize(:lower) }
-  end
-end
-```
-
-**Why prop_transformer?**
-Rails uses snake_case by convention, but JavaScript/React uses camelCase. This transformer automatically converts all prop keys (e.g., `created_at` → `createdAt`) so the frontend receives idiomatic JavaScript objects without manual conversion.
-
-This is what enables:
-- production SSR when `ssrBuildEnabled` is on
-- development SSR automatically through `bin/dev` when the Vite dev server is running
 
 ### Step 8: Configure Dockerfile for SSR
 

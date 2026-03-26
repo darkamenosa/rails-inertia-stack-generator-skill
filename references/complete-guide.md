@@ -78,7 +78,7 @@ bin/rails generate inertia:install \
 8. Adds example route: `/inertia-example`
 
 **Key Files Created:**
-- `app/frontend/entrypoints/inertia.ts` - Client entry
+- `app/frontend/entrypoints/inertia.tsx` - Client entry
 - `app/frontend/entrypoints/application.css` - Tailwind
 - `app/frontend/pages/InertiaExample.tsx` - Example page
 - `config/initializers/inertia_rails.rb` - Inertia config
@@ -170,27 +170,25 @@ bin/rails db:migrate
 
 ---
 
-### Step 2.2: Configure Vite Path Aliases
+### Step 2.2: Configure Vite with Inertia Plugin
 
 **vite.config.ts:**
 ```typescript
+import inertia from '@inertiajs/vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
-import path from 'path'
 import { defineConfig } from 'vite'
 import RubyPlugin from 'vite-plugin-ruby'
 
 export default defineConfig({
   plugins: [
+    RubyPlugin(),
+    inertia({
+      ssr: 'ssr/ssr.tsx',
+    }),
     react(),
     tailwindcss(),
-    RubyPlugin(),
   ],
-  resolve: {
-    alias: {
-      '@': path.resolve(__dirname, './app/frontend'),
-    },
-  },
 })
 ```
 
@@ -230,9 +228,16 @@ createServer((page) =>
     render: ReactDOMServer.renderToString,
     resolve: (name) => {
       const pages = import.meta.glob('../pages/**/*.tsx', { eager: true })
-      return pages[`../pages/${name}.tsx`]
+      const mod = pages[`../pages/${name}.tsx`]
+      if (!mod) throw new Error(`Missing Inertia page: '${name}.tsx'`)
+      return mod.default
     },
     setup: ({ App, props }) => <App {...props} />,
+    defaults: {
+      form: {
+        forceIndicesArrayFormatInFormData: false,
+      },
+    },
   }),
 )
 ```
@@ -241,25 +246,28 @@ createServer((page) =>
 
 ### Step 3.2: Enable Client-Side Hydration
 
-**Edit: `app/frontend/entrypoints/inertia.ts`**
+**Edit: `app/frontend/entrypoints/inertia.tsx`**
 
 ```typescript
+import { StrictMode } from 'react'
+import { createRoot, hydrateRoot } from 'react-dom/client'
 import { createInertiaApp } from '@inertiajs/react'
-import { createElement, ReactNode } from 'react'
-import { createRoot, hydrateRoot } from 'react-dom/client'  // ← Add hydrateRoot
-
-// ... type definitions ...
 
 createInertiaApp({
   resolve: (name) => { /* ... */ },
 
   setup({ el, App, props }) {
     if (el) {
-      // ← SSR hydration in production, normal render in development
-      if (import.meta.env.MODE === "production") {
-        hydrateRoot(el, createElement(App, props))
+      const app = (
+        <StrictMode>
+          <App {...props} />
+        </StrictMode>
+      )
+
+      if (el.hasAttribute('data-server-rendered')) {
+        hydrateRoot(el, app)
       } else {
-        createRoot(el).render(createElement(App, props))
+        createRoot(el).render(app)
       }
     } else {
       console.error('Missing root element...')
@@ -269,8 +277,9 @@ createInertiaApp({
 ```
 
 **Why This Pattern:**
-- **Production:** `hydrateRoot` attaches React to server-rendered HTML
-- **Development:** `createRoot` for faster dev experience without SSR
+- **`data-server-rendered`:** Hydrate whenever SSR HTML is present (both dev and production)
+- **StrictMode:** Wraps both paths for development warnings and future-proofing
+- Do NOT gate on `import.meta.env.MODE === "production"` — dev SSR also needs hydration
 
 ---
 
@@ -312,7 +321,16 @@ InertiaRails.configure do |config|
   config.version = ViteRuby.digest
   config.encrypt_history = true
   config.always_include_errors_hash = true
-  config.ssr_enabled = ViteRuby.config.ssr_build_enabled  # ← Enable SSR
+  config.ssr_enabled = lambda {
+    ViteRuby.config.ssr_build_enabled || ViteRuby.instance.dev_server_running?
+  }
+  config.use_script_element_for_initial_page = true
+  config.use_data_inertia_head_attribute = true
+
+  # Transform snake_case props to camelCase for JavaScript frontend
+  config.prop_transformer = lambda do |props:|
+    props.deep_transform_keys { |key| key.to_s.camelize(:lower) }
+  end
 end
 ```
 
@@ -641,7 +659,7 @@ project/
 ├── app/
 │   ├── frontend/
 │   │   ├── entrypoints/
-│   │   │   ├── inertia.ts           # Client entry with hydration
+│   │   │   ├── inertia.tsx          # Client entry with hydration
 │   │   │   └── application.css      # Tailwind CSS
 │   │   ├── ssr/
 │   │   │   └── ssr.tsx              # SSR server entry
