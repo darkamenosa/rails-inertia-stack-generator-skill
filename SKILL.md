@@ -61,7 +61,7 @@ cd PROJECT_NAME
 Run these commands in sequence:
 
 ```bash
-# Add Inertia Rails gem
+# Add Inertia Rails gem (current Inertia 3-compatible Rails adapter)
 bundle add inertia_rails
 
 # Install frontend stack (non-interactive)
@@ -80,6 +80,23 @@ After installation:
 # Setup databases
 bin/rails db:setup
 bin/rails db:migrate
+```
+
+Target the current plugin-based stack:
+- `inertia_rails` 3.19+
+- `@inertiajs/react` 3.x
+- `@inertiajs/vite` 3.x
+
+The generator should install the frontend packages, but always verify `package.json` includes `@inertiajs/react` and `@inertiajs/vite`.
+
+Also verify `package.json` builds both bundles:
+```json
+{
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && vite build --ssr"
+  }
+}
 ```
 
 ### Step 4: Configure RuboCop (Optional but Recommended)
@@ -332,6 +349,12 @@ This generates route helpers that can be imported in TypeScript. See [js-routes 
 
 ### Step 7: Configure Server-Side Rendering (SSR)
 
+For Inertia 3 with `inertia_rails` 3.19+, the recommended setup is:
+- Use `@inertiajs/vite`
+- Keep `bin/dev` for development SSR
+- Build the SSR bundle only for production
+- Hydrate on the client whenever the root has `data-server-rendered`
+
 **Create SSR entry point** at `app/frontend/ssr/ssr.tsx`:
 ```typescript
 import { createInertiaApp } from '@inertiajs/react'
@@ -356,7 +379,29 @@ createServer((page) =>
 )
 ```
 
-**Enable client-side hydration** in `app/frontend/entrypoints/inertia.ts`:
+**Configure Vite for plugin-based SSR** in `vite.config.ts`:
+```typescript
+import inertia from '@inertiajs/vite'
+import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
+import { defineConfig } from 'vite'
+import RubyPlugin from 'vite-plugin-ruby'
+
+export default defineConfig({
+  plugins: [
+    RubyPlugin(),
+    inertia({
+      ssr: 'ssr/ssr.tsx',
+    }),
+    react(),
+    tailwindcss(),
+  ],
+})
+```
+
+Do not add a manual `build.rollupOptions.input` override unless you have a repo-specific reason. The plugin and `vite-plugin-ruby` already derive the SSR entry correctly.
+
+**Enable client-side hydration** in `app/frontend/entrypoints/inertia.tsx`:
 
 Add `hydrateRoot` import:
 ```typescript
@@ -367,10 +412,12 @@ Update setup function:
 ```typescript
 setup({ el, App, props }) {
   if (el) {
-    if (import.meta.env.MODE === "production") {
-      hydrateRoot(el, createElement(App, props))
+    const app = <App {...props} />
+
+    if (el.hasAttribute('data-server-rendered')) {
+      hydrateRoot(el, app)
     } else {
-      createRoot(el).render(createElement(App, props))
+      createRoot(el).render(app)
     }
   } else {
     console.error('Missing root element...')
@@ -378,29 +425,28 @@ setup({ el, App, props }) {
 }
 ```
 
-**(Optional) Use script element for initial page JSON (Inertia v2 future default)**  
-If you enable `useScriptElementForInitialPage` on the client, you must also:
-1) Enable the matching server option, and  
-2) Render `inertia_root` from an Inertia root view (not the layout).
+Do not gate hydration on `import.meta.env.MODE === 'production'`. In dev SSR, the HTML is already server-rendered and still needs hydration.
 
-Add to `app/frontend/entrypoints/inertia.ts` and `app/frontend/ssr/ssr.tsx`:
-```typescript
-defaults: {
-  form: {
-    forceIndicesArrayFormatInFormData: false,
-  },
-  future: {
-    useScriptElementForInitialPage: true,
-    useDataInertiaHeadAttribute: true,
-    useDialogForErrorModal: true,
-    preserveEqualProps: true,
-  },
-},
-```
+**Enable Inertia 3 page bootstrap + head markers on the Rails side**
+
+Inertia 3 expects the server to render:
+- `<script data-page="app" type="application/json">`
+- head tags marked with `data-inertia`
 
 Add to `config/initializers/inertia_rails.rb`:
 ```ruby
-config.use_script_element_for_initial_page = true
+InertiaRails.configure do |config|
+  config.version = ViteRuby.digest
+  config.encrypt_history = true
+  config.always_include_errors_hash = true
+  config.use_script_element_for_initial_page = true
+  config.use_data_inertia_head_attribute = true
+
+  # Transform snake_case props to camelCase for JavaScript frontend
+  config.prop_transformer = lambda do |props:|
+    props.deep_transform_keys { |key| key.to_s.camelize(:lower) }
+  end
+end
 ```
 
 Create `app/views/inertia.html.erb`:
@@ -408,7 +454,19 @@ Create `app/views/inertia.html.erb`:
 <%= inertia_root %>
 ```
 
-If you skip these, the client will look for `<script data-page>` but the server will still render `data-page` on the root div, causing a null page error during boot.
+Do not add the old client-side `defaults.future` block for these flags. In Inertia 3 those client futures are no longer the right upgrade path; keep the compatibility settings in Rails.
+
+**Verify the application layout still includes the Inertia + Vite tags**
+
+At minimum, `app/views/layouts/application.html.erb` should include:
+```erb
+<%= vite_react_refresh_tag %>
+<%= vite_client_tag %>
+<%= vite_typescript_tag "inertia.tsx" %>
+<%= inertia_ssr_head %>
+```
+
+If `inertia_ssr_head` is missing, SSR head tags will not be rendered. If `vite_typescript_tag "inertia.tsx"` is missing, the client app will not boot.
 
 **Enable SSR in Vite** - Add to `config/vite.json`:
 ```json
@@ -425,7 +483,11 @@ InertiaRails.configure do |config|
   config.version = ViteRuby.digest
   config.encrypt_history = true
   config.always_include_errors_hash = true
-  config.ssr_enabled = ViteRuby.config.ssr_build_enabled
+  config.ssr_enabled = lambda {
+    ViteRuby.config.ssr_build_enabled || ViteRuby.instance.dev_server_running?
+  }
+  config.use_script_element_for_initial_page = true
+  config.use_data_inertia_head_attribute = true
 
   # Transform snake_case props to camelCase for JavaScript frontend
   config.prop_transformer = lambda do |props:|
@@ -436,6 +498,10 @@ end
 
 **Why prop_transformer?**
 Rails uses snake_case by convention, but JavaScript/React uses camelCase. This transformer automatically converts all prop keys (e.g., `created_at` → `createdAt`) so the frontend receives idiomatic JavaScript objects without manual conversion.
+
+This is what enables:
+- production SSR when `ssrBuildEnabled` is on
+- development SSR automatically through `bin/dev` when the Vite dev server is running
 
 ### Step 8: Configure Dockerfile for SSR
 
@@ -613,7 +679,9 @@ bin/rails generate inertia:install --no-interactive
 
 ### SSR Build Process
 - ✅ Use `rails assets:precompile` (handles both client and SSR, plus npm install)
+- ✅ In development, use `bin/dev` for SSR with HMR
 - ❌ Do NOT run `bin/vite build --ssr` separately (redundant)
+- ❌ Do NOT run `bin/vite ssr` during development
 - ❌ Do NOT run `npm ci` separately (Vite Ruby handles it)
 
 ### Dockerfile Node.js
@@ -679,11 +747,15 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 4. **Missing network-alias** - Rails cannot connect to SSR without `network-alias: vite_ssr`
 5. **Wrong Procfile.dev order** - Vite first causes Rails to run on port 3100 instead of 3000
 6. **Missing vite.json host** - Without `"host": "127.0.0.1"`, connections to 127.0.0.1 fail
-7. **Not updating database.yml** - Must add `host: <%= ENV["DB_HOST"] %>` and password for production
-8. **Wrong SQLite volume path** - Must mount `/rails/storage` (not `/rails/db`) since Rails 8 stores SQLite in storage/ directory
-9. **Using Redis image instead of Valkey** - Use `valkey/valkey:9` image to avoid Redis licensing concerns
-10. **Bundler version mismatch** - Must lock bundler version in Dockerfile to match `Gemfile.lock` to prevent cache invalidation
-11. **Wrong prop_transformer signature** - Must use keyword argument `lambda { |props:| ... }` or `->(props:) { ... }`, NOT positional `proc { |props| ... }`. inertia_rails 3.17+ calls `prop_transformer(props: props)` with a keyword arg — using a positional param wraps props in a `{ props: { ... } }` key, making all props inaccessible on the frontend
+7. **Wrong hydration logic** - Do not use `createRoot()` in dev when SSR HTML is present; hydrate when `#app` has `data-server-rendered`
+8. **Missing Rails Inertia 3 flags** - Without `use_script_element_for_initial_page = true` and `use_data_inertia_head_attribute = true`, Inertia 3 client and Rails markup diverge
+9. **Missing SSR build script** - `package.json` must use `"build": "vite build && vite build --ssr"`
+10. **Missing `inertia_ssr_head` in layout** - SSR head tags and `data-inertia` metadata will be missing from HTML
+11. **Not updating database.yml** - Must add `host: <%= ENV["DB_HOST"] %>` and password for production
+12. **Wrong SQLite volume path** - Must mount `/rails/storage` (not `/rails/db`) since Rails 8 stores SQLite in storage/ directory
+13. **Using Redis image instead of Valkey** - Use `valkey/valkey:9` image to avoid Redis licensing concerns
+14. **Bundler version mismatch** - Must lock bundler version in Dockerfile to match `Gemfile.lock` to prevent cache invalidation
+15. **Wrong prop_transformer signature** - Must use keyword argument `lambda { |props:| ... }` or `->(props:) { ... }`, NOT positional `proc { |props| ... }`. inertia_rails 3.17+ calls `prop_transformer(props: props)` with a keyword arg — using a positional param wraps props in a `{ props: { ... } }` key, making all props inaccessible on the frontend
 
 ## Troubleshooting
 
@@ -691,12 +763,24 @@ Fixed hostname via `network-alias: vite_ssr` enables reliable connection.
 - Check Node.js is in Dockerfile base stage
 - Verify `config/vite.json` has `"ssrBuildEnabled": true`
 - Ensure `app/frontend/ssr/ssr.tsx` exists
-- Run `npm ci` to reinstall dependencies
+- Verify `vite.config.ts` includes `inertia({ ssr: 'ssr/ssr.tsx' })`
 
 ### Rails Can't Connect to SSR
+- In development, verify `config.ssr_enabled` checks `ViteRuby.instance.dev_server_running?`
 - Verify `vite` server has `network-alias: vite_ssr` in deploy.yml
 - Check `INERTIA_SSR_URL: http://vite_ssr:13714` in env
 - Ensure both web and vite containers are on same network
+
+### Dev SSR Looks Like CSR
+- `curl http://localhost:3000/` and verify:
+  - `<script data-page="app" type="application/json">`
+  - `<div data-server-rendered="true" id="app">`
+  - head tags with `data-inertia`
+- Check the Vite dev server log for `Inertia SSR dev endpoint: /__inertia_ssr`
+
+### HTML Has Body But No SSR Head Tags
+- Verify `app/views/layouts/application.html.erb` includes `<%= inertia_ssr_head %>`
+- Verify `config.use_data_inertia_head_attribute = true`
 
 ### Database Connection Fails
 - Verify `DB_HOST` matches accessory service name (e.g., `PROJECT_NAME-db`)
